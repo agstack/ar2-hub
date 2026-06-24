@@ -1,0 +1,5 @@
+# Shapefile Path
+WORLD_SHP_FILE= YOUR_PATH/99bfd9e7-bb42-4728-87b5-07f8c8ac631c2020328-1-1vef4ev.lu5nk.shp
+
+# Registry Servers (Stored as a valid JSON string)
+REGISTRY_SERVERS={"USA": "URL", "India": "URL", "Common": "URL"}
