@@ -26,15 +26,15 @@ from user_schemas import UserCreate, UserResponse
 
 load_dotenv()
 
-SECRET_KEY = os.getenv("SECRET_KEY", "REMOVED")
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
 ENABLE_EMAIL = os.getenv("ENABLE_EMAIL", "True").lower() in ("true", "1", "yes")
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "REMOVED")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "REMOVED")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL")
 
