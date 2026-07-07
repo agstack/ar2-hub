@@ -31,7 +31,6 @@ class UserCreate(UserBase):
     password: str = Field(..., min_length=8, description="Minimum 8 characters")
 
     def get_hashed_password(self) -> str:
-        """Helper function to securely hash the password before DB insertion."""
         salt = bcrypt.gensalt()
         hashed_password = bcrypt.hashpw(self.password.encode('utf-8'), salt)
         return hashed_password.decode('utf-8')
@@ -40,6 +39,23 @@ class UserResponse(UserBase):
     id: int
     registration_date: datetime
     is_active: bool
+
+    class Config:
+        from_attributes = True
+
+class UserRegistrationResponse(UserResponse):
+    client_id: str
+    client_secret: str
+
+class SigningKeyCreate(BaseModel):
+    public_key: str = Field(..., description="The Ed25519 public key in Base64 or Hex")
+
+class SigningKeyResponse(BaseModel):
+    id: int
+    user_id: int
+    public_key: str
+    created_at: datetime
+    status: str
 
     class Config:
         from_attributes = True

@@ -7,11 +7,13 @@ import json
 import asyncio
 import httpx
 import secrets
-import smtplib
 import bcrypt
 import jwt
+import base64
 from datetime import datetime, timedelta
-from email.message import EmailMessage
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
+from cryptography.hazmat.backends import default_backend
 
 import geopandas as gpd
 from shapely.geometry import Point, shape
@@ -25,20 +27,41 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 
 from user_database import get_user_db, engine, Base
-from user_models import User
-from user_schemas import UserCreate, UserResponse
+from user_models import User, SigningKey, SystemKey
+from user_schemas import UserCreate, UserResponse, UserRegistrationResponse, SigningKeyCreate, SigningKeyResponse
 
 load_dotenv()
 
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = "HS256"
+ALGORITHM = "RS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-ENABLE_EMAIL = os.getenv("ENABLE_EMAIL", "True").lower() in ("true", "1", "yes")
-SMTP_SERVER = os.getenv("SMTP_SERVER")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+def get_or_create_rsa_key(db_session):
+    system_key = db_session.query(SystemKey).filter(SystemKey.is_active == True).first()
+    if not system_key:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+        public_key = private_key.public_key()
+        
+        priv_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption()
+        ).decode('utf-8')
+        
+        pub_pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        ).decode('utf-8')
+        
+        system_key = SystemKey(public_key=pub_pem, private_key=priv_pem)
+        db_session.add(system_key)
+        db_session.commit()
+        db_session.refresh(system_key)
+    return system_key
+
+def int_to_base64(num: int) -> str:
+    val = num.to_bytes((num.bit_length() + 7) // 8, byteorder='big')
+    return base64.urlsafe_b64encode(val).decode('utf-8').rstrip('=')
+
 
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL")
 
@@ -66,39 +89,77 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Asset Registry Hub Gateway")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/users/login")
 
-
-def send_email(email_to: str, subject: str, content: str):
-    if not ENABLE_EMAIL:
-        return
-    msg = EmailMessage()
-    msg.set_content(content)
-    msg['Subject'] = subject
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = email_to
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_user_db)):
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(msg)
+        system_key = get_or_create_rsa_key(db)
+        payload = jwt.decode(token, system_key.public_key, algorithms=[ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        return email
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired. Please log in again.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+
+@app.get("/auth/system-keys", tags=["System Setup"])
+def get_system_keys(db: Session = Depends(get_user_db)):
+    system_key = get_or_create_rsa_key(db)
+    return {
+        "public_key": system_key.public_key,
+        "private_key": system_key.private_key
+    }
+
+@app.get("/.well-known/jwks.json", tags=["Authentication"])
+def get_jwks(db: Session = Depends(get_user_db)):
+    system_key = get_or_create_rsa_key(db)
+    jwks = {"keys": []}
+    try:
+        public_key_obj = serialization.load_pem_public_key(system_key.public_key.encode('utf-8'), backend=default_backend())
+        if isinstance(public_key_obj, rsa.RSAPublicKey):
+            numbers = public_key_obj.public_numbers()
+            jwks["keys"].append({
+                "kty": "RSA",
+                "alg": "RS256",
+                "use": "sig",
+                "kid": "hub-key-1",
+                "n": int_to_base64(numbers.n),
+                "e": int_to_base64(numbers.e)
+            })
     except Exception as e:
-        print(f"Failed to send email to {email_to}: {e}")
+        pass
+    return jwks
 
-def send_verification_email(email_to: str, token: str):
-    verification_link = f"{SERVER_BASE_URL}/users/verify?token={token}"
-    content = f"Welcome to the Asset Registry!\n\nPlease verify your email address to activate your account by clicking the link below:\n\n{verification_link}\n\nThis link expires in 24 hours."
-    send_email(email_to, "Verify Your Account", content)
+@app.post("/auth/signing-key", response_model=SigningKeyResponse, status_code=status.HTTP_201_CREATED, tags=["Authentication"])
+def register_signing_key(payload: SigningKeyCreate, current_user: str = Depends(get_current_user), db: Session = Depends(get_user_db)):
+    user = db.query(User).filter(User.email == current_user).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    new_key = SigningKey(
+        user_id=user.id,
+        public_key=payload.public_key,
+        status="active"
+    )
+    db.add(new_key)
+    db.commit()
+    db.refresh(new_key)
+    return new_key
 
-def send_credentials_email(email_to: str, client_id: str, client_secret: str):
-    content = f"Hello,\n\nYour programmatic API credentials have been generated:\n\nClient ID: {client_id}\nClient Secret: {client_secret}\n\nKeep these secure. We only store cryptographic hashes."
-    send_email(email_to, "Your API Gateway Credentials", content)
-
-
-@app.post("/users/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["User Management"])
-def register_user(payload: UserCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_user_db)):
+@app.post("/users/register", response_model=UserRegistrationResponse, status_code=status.HTTP_201_CREATED, tags=["User Management"])
+def register_user(payload: UserCreate, db: Session = Depends(get_user_db)):
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     if db.query(User).filter(User.phone == payload.phone).first():
         raise HTTPException(status_code=400, detail="Phone number already registered")
+
+    new_client_id = f"client_{secrets.token_hex(12)}"
+    new_client_secret = secrets.token_urlsafe(32)
+    hashed_secret = bcrypt.hashpw(new_client_secret.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
     new_user = User(
         first_name=payload.first_name,
@@ -106,62 +167,24 @@ def register_user(payload: UserCreate, background_tasks: BackgroundTasks, db: Se
         email=payload.email,
         phone=payload.phone,
         password_hash=payload.get_hashed_password(),
-        is_active=False
+        is_active=True,
+        client_id=new_client_id,
+        client_secret_hash=hashed_secret
     )
 
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
 
-    expire = datetime.utcnow() + timedelta(hours=24)
-    verification_token = jwt.encode({"sub": new_user.email, "type": "verification", "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+    response_data = UserResponse.model_validate(new_user).model_dump()
+    response_data["client_id"] = new_client_id
+    response_data["client_secret"] = new_client_secret
     
-    background_tasks.add_task(send_verification_email, payload.email, verification_token)
+    return UserRegistrationResponse(**response_data)
 
-    return new_user
-
-@app.get("/users/verify", tags=["User Management"])
-def verify_email(token: str, background_tasks: BackgroundTasks, db: Session = Depends(get_user_db)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        if payload.get("type") != "verification":
-            raise HTTPException(status_code=400, detail="Invalid token type")
-            
-        email = payload.get("sub")
-        user = db.query(User).filter(User.email == email).first()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        if user.is_active:
-            return {"message": "Account is already active."}
-            
-        user.is_active = True
-        
-        new_client_id = f"client_{secrets.token_hex(12)}"
-        new_client_secret = secrets.token_urlsafe(32)
-        hashed_secret = bcrypt.hashpw(new_client_secret.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-        user.client_id = new_client_id
-        user.client_secret_hash = hashed_secret
-        db.commit()
-
-        background_tasks.add_task(send_credentials_email, user.email, new_client_id, new_client_secret)
-
-        return {
-            "message": "Email verified successfully! Your account is now active.",
-            "notice": "An email was sent, but here are your keys just in case it goes to spam.",
-            "client_id": new_client_id,
-            "client_secret": new_client_secret
-        }
-        
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=400, detail="Verification link has expired.")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=400, detail="Invalid verification link.")
-
-def generate_jwt(email: str) -> dict:
+def generate_jwt(email: str, private_key: str) -> dict:
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    token = jwt.encode({"sub": email, "type": "access", "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+    token = jwt.encode({"sub": email, "type": "access", "exp": expire}, private_key, algorithm=ALGORITHM, headers={"kid": "hub-key-1"})
     return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/users/login", tags=["Authentication"])
@@ -173,21 +196,22 @@ def frontend_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is not active. Please check your email to verify your account.")
         
-    return generate_jwt(user.email)
+    system_key = get_or_create_rsa_key(db)
+    return generate_jwt(user.email, system_key.private_key)
 
 
 class ApiKeyRequest(BaseModel):
     email: EmailStr
 
 @app.post("/users/request-api-keys", tags=["User Management"])
-def request_api_keys(payload: ApiKeyRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_user_db)):
+def request_api_keys(payload: ApiKeyRequest, db: Session = Depends(get_user_db)):
     user = db.query(User).filter(User.email == payload.email).first()
-    
+
     if not user:
-        return {"message": "If that email is registered and active, API credentials will be sent to it."}
-        
+        raise HTTPException(status_code=404, detail="User not found.")
+
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Please verify your email address before requesting API keys.")
+        raise HTTPException(status_code=403, detail="Account is not active.")
 
     new_client_id = f"client_{secrets.token_hex(12)}"
     new_client_secret = secrets.token_urlsafe(32)
@@ -197,9 +221,10 @@ def request_api_keys(payload: ApiKeyRequest, background_tasks: BackgroundTasks, 
     user.client_secret_hash = hashed_secret
     db.commit()
 
-    background_tasks.add_task(send_credentials_email, user.email, new_client_id, new_client_secret)
-
-    return {"message": "If that email is registered and active, API credentials will be sent to it."}
+    return {
+        "client_id": new_client_id,
+        "client_secret": new_client_secret
+    }
 
 class ClientCredentialPayload(BaseModel):
     client_id: str
@@ -216,23 +241,10 @@ def programmatic_token(payload: ClientCredentialPayload, db: Session = Depends(g
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is deactivated")
         
-    return generate_jwt(user.email)
+    system_key = get_or_create_rsa_key(db)
+    return generate_jwt(user.email, system_key.private_key)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="Invalid token type")
-            
-        email: str = payload.get("sub")
-        if email is None:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
-        return email
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired. Please log in again.")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
 
 
 def get_country_from_point(coords: list) -> str:

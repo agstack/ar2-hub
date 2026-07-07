@@ -21,4 +21,22 @@ class User(Base):
     client_secret_hash = Column(String(255), nullable=True)
     
     registration_date = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+
+class SigningKey(Base):
+    __tablename__ = "signing_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    public_key = Column(String(255), unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String(50), default="active")
+
+class SystemKey(Base):
+    __tablename__ = "system_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    public_key = Column(String, nullable=False)
+    private_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
