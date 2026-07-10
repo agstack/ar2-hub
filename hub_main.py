@@ -202,7 +202,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_user_db)):
     return UserRegistrationResponse(**response_data)
 
 def generate_jwt(email: str, private_key: str) -> dict:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    from datetime import timezone
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     token = jwt.encode({"sub": email, "type": "access", "exp": expire}, private_key, algorithm=ALGORITHM, headers={"kid": "hub-key-1"})
     return {"access_token": token, "token_type": "bearer"}
 

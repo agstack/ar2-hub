@@ -3,7 +3,11 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
-from datetime import datetime
+from datetime import datetime, timezone
+
+def get_utc_now():
+    return datetime.now(timezone.utc)
+
 from user_database import Base
 
 class User(Base):
@@ -20,7 +24,7 @@ class User(Base):
     client_id = Column(String(50), unique=True, index=True, nullable=True)
     client_secret_hash = Column(String(255), nullable=True)
     
-    registration_date = Column(DateTime, default=datetime.utcnow)
+    registration_date = Column(DateTime, default=get_utc_now)
     is_active = Column(Boolean, default=True)
 
 class SigningKey(Base):
@@ -29,7 +33,7 @@ class SigningKey(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, index=True, nullable=False)
     public_key = Column(String(255), unique=True, index=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_utc_now)
     status = Column(String(50), default="active")
 
 class SystemKey(Base):
@@ -38,5 +42,5 @@ class SystemKey(Base):
     id = Column(Integer, primary_key=True, index=True)
     public_key = Column(String, nullable=False)
     private_key = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=get_utc_now)
     is_active = Column(Boolean, default=True)
