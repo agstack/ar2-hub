@@ -388,8 +388,11 @@ async def calculate_cross_region_overlap(payload: OverlapRequest, request: Reque
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Geometry Processing Error: {str(e)}")
 
+
 @app.api_route("/{endpoint_path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Gateway Routing"])
-async def route_to_regional_registry(endpoint_path: str, request: Request, current_user: str = Depends(get_current_user)):
+#async def route_to_regional_registry(endpoint_path: str, request: Request, current_user: str = Depends(get_current_user)):
+async def route_to_regional_registry(endpoint_path: str, request: Request):
+    current_user = "Unauthenticated_Demo_User" # comment this to enable authentication
     target_server_url = None
     routing_strategy = "Unknown"
     resolved_country = "Unknown"
