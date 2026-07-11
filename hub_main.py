@@ -106,14 +106,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
 
-@app.get("/auth/system-keys", tags=["System Setup"])
-def get_system_keys(db: Session = Depends(get_user_db)):
-    system_key = get_or_create_rsa_key(db)
-    return {
-        "public_key": system_key.public_key,
-        "private_key": system_key.private_key
-    }
-
 @app.get("/.well-known/jwks.json", tags=["Authentication"])
 def get_jwks(db: Session = Depends(get_user_db)):
     system_key = get_or_create_rsa_key(db)
@@ -140,6 +132,33 @@ def register_signing_key(payload: SigningKeyCreate, current_user: str = Depends(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
+    try:
+        if payload.public_key.startswith("-----BEGIN"):
+            public_key_obj = serialization.load_pem_public_key(
+                payload.public_key.encode('utf-8'),
+                backend=default_backend()
+            )
+        elif payload.public_key.startswith("ssh-ed25519"):
+            public_key_obj = serialization.load_ssh_public_key(
+                payload.public_key.encode('utf-8'),
+                backend=default_backend()
+            )
+        else:
+            try:
+                key_bytes = bytes.fromhex(payload.public_key)
+            except ValueError:
+                import base64
+                padded = payload.public_key + '=' * (-len(payload.public_key) % 4)
+                key_bytes = base64.urlsafe_b64decode(padded)
+            public_key_obj = ed25519.Ed25519PublicKey.from_public_bytes(key_bytes)
+            
+        if not isinstance(public_key_obj, ed25519.Ed25519PublicKey):
+            raise ValueError("Not Ed25519")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Ed25519 public key format")
+
+    db.query(SigningKey).filter(SigningKey.user_id == user.id, SigningKey.status == "active").update({"status": "rotated"})
+
     new_key = SigningKey(
         user_id=user.id,
         public_key=payload.public_key,
@@ -183,7 +202,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_user_db)):
     return UserRegistrationResponse(**response_data)
 
 def generate_jwt(email: str, private_key: str) -> dict:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    from datetime import timezone
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     token = jwt.encode({"sub": email, "type": "access", "exp": expire}, private_key, algorithm=ALGORITHM, headers={"kid": "hub-key-1"})
     return {"access_token": token, "token_type": "bearer"}
 
@@ -194,7 +214,7 @@ def frontend_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
     if not user or not bcrypt.checkpw(form_data.password.encode('utf-8'), user.password_hash.encode('utf-8')):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is not active. Please check your email to verify your account.")
+        raise HTTPException(status_code=403, detail="Account is not active.")
         
     system_key = get_or_create_rsa_key(db)
     return generate_jwt(user.email, system_key.private_key)
@@ -369,8 +389,22 @@ async def calculate_cross_region_overlap(payload: OverlapRequest, request: Reque
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Geometry Processing Error: {str(e)}")
 
+
 @app.api_route("/{endpoint_path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Gateway Routing"])
-async def route_to_regional_registry(endpoint_path: str, request: Request, current_user: str = Depends(get_current_user)):
+async def route_to_regional_registry(endpoint_path: str, request: Request, db: Session = Depends(get_user_db)):
+    auth_header = request.headers.get("Authorization")
+    if request.method == "GET":
+        current_user = "anonymous"          # public L0 reads
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                current_user = get_current_user(auth_header.split(" ")[1], db)
+            except Exception:
+                pass
+    else:
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        token = auth_header.split(" ")[1]
+        current_user = get_current_user(token, db)
     target_server_url = None
     routing_strategy = "Unknown"
     resolved_country = "Unknown"
@@ -414,9 +448,11 @@ async def route_to_regional_registry(endpoint_path: str, request: Request, curre
     if not target_server_url:
         geo_id = None
         path_parts = endpoint_path.split("/")
-        if len(path_parts) > 1 and len(path_parts[-1]) >= 16: 
-            geo_id = path_parts[-1]
-        elif request.method in ["POST", "PUT"] and body_bytes:
+        for part in path_parts:
+            if len(part) >= 16:
+                geo_id = part
+                break
+        if not geo_id and request.method in ["POST", "PUT"] and body_bytes:
             try:
                 payload = json.loads(body_bytes.decode('utf-8'))
                 geo_id = payload.get("geo_id") or payload.get("geo_id_field_1")
