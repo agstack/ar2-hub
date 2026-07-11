@@ -391,9 +391,20 @@ async def calculate_cross_region_overlap(payload: OverlapRequest, request: Reque
 
 
 @app.api_route("/{endpoint_path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Gateway Routing"])
-#async def route_to_regional_registry(endpoint_path: str, request: Request, current_user: str = Depends(get_current_user)):
-async def route_to_regional_registry(endpoint_path: str, request: Request):
-    current_user = "Unauthenticated_Demo_User" # comment this to enable authentication
+async def route_to_regional_registry(endpoint_path: str, request: Request, db: Session = Depends(get_user_db)):
+    auth_header = request.headers.get("Authorization")
+    if request.method == "GET":
+        current_user = "anonymous"          # public L0 reads
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                current_user = get_current_user(auth_header.split(" ")[1], db)
+            except Exception:
+                pass
+    else:
+        if not auth_header or not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        token = auth_header.split(" ")[1]
+        current_user = get_current_user(token, db)
     target_server_url = None
     routing_strategy = "Unknown"
     resolved_country = "Unknown"
@@ -437,9 +448,11 @@ async def route_to_regional_registry(endpoint_path: str, request: Request):
     if not target_server_url:
         geo_id = None
         path_parts = endpoint_path.split("/")
-        if len(path_parts) > 1 and len(path_parts[-1]) >= 16: 
-            geo_id = path_parts[-1]
-        elif request.method in ["POST", "PUT"] and body_bytes:
+        for part in path_parts:
+            if len(part) >= 16:
+                geo_id = part
+                break
+        if not geo_id and request.method in ["POST", "PUT"] and body_bytes:
             try:
                 payload = json.loads(body_bytes.decode('utf-8'))
                 geo_id = payload.get("geo_id") or payload.get("geo_id_field_1")
