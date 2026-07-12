@@ -186,6 +186,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_user_db)):
         email=payload.email,
         phone=payload.phone,
         password_hash=payload.get_hashed_password(),
+        role=payload.role,
+        country=payload.country,
         is_active=True,
         client_id=new_client_id,
         client_secret_hash=hashed_secret
@@ -480,7 +482,7 @@ async def route_to_regional_registry(endpoint_path: str, request: Request, db: S
         
     async with httpx.AsyncClient() as client:
         try:
-            headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "authorization")}
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host",)}
             
             proxy_req = client.build_request(
                 method=request.method,
