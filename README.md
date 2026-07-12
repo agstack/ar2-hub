@@ -38,7 +38,7 @@ Follow these steps to run the Hub Gateway locally alongside an `ar2` Node and th
 
 | Variable | Description | Default | Demo-Only? |
 |----------|-------------|---------|------------|
-| `DATABASE_URL` | PostgreSQL connection string. Falls back to local SQLite if omitted. | `sqlite:///./hub.db` | No |
+| `DATABASE_URL` | PostgreSQL connection string. Defaults to local postgres if omitted. | `postgresql://postgres:postgres@localhost:5432/postgres` | No |
 | `SERVER_BASE_URL` | Base URL of the Gateway instance. | `http://127.0.0.1:8000` | No |
 | `REGISTRY_SERVERS` | JSON string defining backend Nodes and their capabilities (country routing). | `[{"url": "http://127.0.0.1:8001", "countries": ["USA", "India"]}]` | No |
 | `WORLD_SHP_FILE` | Path to the `.shp` file used for point-in-polygon country resolution before routing. | *None* | No |
