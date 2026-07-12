@@ -15,6 +15,8 @@ class UserBase(BaseModel):
         ..., 
         description="Must be in E.164 international format (e.g., +1234567890)"
     )
+    role: Optional[str] = None
+    country: Optional[str] = None
 
     @field_validator('phone')
     def validate_international_phone(cls, v):

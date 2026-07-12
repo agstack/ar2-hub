@@ -1,0 +1,82 @@
+# ==========================================
+# AR2-HUB (GATEWAY) CURL TESTING GUIDE
+# ==========================================
+
+# STEP 1: Run the Server
+source ar2-hub-env/bin/activate
+uvicorn hub_main:app --host 0.0.0.0 --port 8000 --reload
+
+# ==========================================
+# USER MANAGEMENT & AUTHENTICATION
+# ==========================================
+
+# Register a New User
+curl -X 'POST' 'http://127.0.0.1:8000/users/register' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "first_name": "Test",
+  "last_name": "User",
+  "email": "test_user@gmail.com",
+  "phone": "+918000000000",
+  "password": "Password123",
+  "role": "farmer",
+  "country": "USA"
+}'
+
+# Login to get JWT Token
+curl -X 'POST' 'http://127.0.0.1:8000/users/login' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'username=test_user@gmail.com&password=Password123'
+
+# Note: Replace <ACCESS_TOKEN> below with the token received from login.
+
+# ==========================================
+# FIELD REGISTRATION (Via Hub)
+# ==========================================
+
+# Register a single Field Boundary
+curl -X 'POST' 'http://127.0.0.1:8000/register-field-boundary' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>' \
+  -d '{
+  "wkt": "POLYGON((-96.775 37.740,-96.775 37.737,-96.770 37.737,-96.770 37.740,-96.775 37.740))",
+  "threshold": 95,
+  "return_s2_indices": false
+}'
+
+# Bulk Register Field Boundaries (GeoJSON File)
+curl -X 'POST' 'http://127.0.0.1:8000/register-field-boundaries-geojson' \
+  -H 'accept: application/json' \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>' \
+  -F 'file=@example_fields_geojson_format.geojson'
+
+# Bulk Register Points (GeoJSON File)
+curl -X 'POST' 'http://127.0.0.1:8000/register-points-geojson' \
+  -H 'accept: application/json' \
+  -H 'Authorization: Bearer <ACCESS_TOKEN>' \
+  -F 'file=@example_points_geojson_format.geojson'
+
+# ==========================================
+# FETCH & RESOLVE ENDPOINTS (Via Hub)
+# ==========================================
+# Note: Replace <GEO_ID> with the ID returned from registration.
+# Note: Replace <GRANT_TOKEN> with a valid ODRL JWT credential.
+
+# Resolve Geo ID (L0 Masked - No Auth)
+curl -X 'GET' 'http://127.0.0.1:8000/resolve/<GEO_ID>' -H 'accept: application/json'
+
+# Fetch Field Boundary (L1 - Requires Grant passed in X-Field-Grant)
+curl -X 'GET' 'http://127.0.0.1:8000/fetch-field/<GEO_ID>' \
+  -H 'accept: application/json' \
+  -H 'X-Field-Grant: <GRANT_TOKEN>'
+
+# Fetch WKT directly (L1 - Requires Grant)
+curl -X 'GET' 'http://127.0.0.1:8000/fetch-field-wkt/<GEO_ID>' \
+  -H 'accept: application/json' \
+  -H 'X-Field-Grant: <GRANT_TOKEN>'
+
+# Generate EUDR Export (L1 - Requires Grant)
+curl -X 'GET' 'http://127.0.0.1:8000/geoid/<GEO_ID>/eudr-export' \
+  -H 'accept: application/json' \
+  -H 'X-Field-Grant: <GRANT_TOKEN>'

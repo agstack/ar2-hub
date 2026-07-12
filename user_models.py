@@ -21,6 +21,9 @@ class User(Base):
     phone = Column(String(20), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     
+    role = Column(String(50), nullable=True)
+    country = Column(String(100), nullable=True)
+    
     client_id = Column(String(50), unique=True, index=True, nullable=True)
     client_secret_hash = Column(String(255), nullable=True)
     
