@@ -21,6 +21,7 @@ from shapely.wkt import loads as load_wkt
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, Request, HTTPException, status, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, status, Depends, BackgroundTasks, Response
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -347,12 +348,16 @@ async def calculate_cross_region_overlap(payload: OverlapRequest, request: Reque
             headers["content-length"] = str(len(forward_body))
             
             proxy_req = client.build_request("POST", target_url, headers=headers, content=forward_body)
-            proxy_resp = await client.send(proxy_req, stream=True)
+            proxy_resp = await client.send(proxy_req)
             
-            return StreamingResponse(
-                proxy_resp.aiter_raw(),
+            headers_to_return = dict(proxy_resp.headers)
+            headers_to_return.pop("content-encoding", None)
+            headers_to_return.pop("content-length", None)
+            
+            return Response(
+                content=proxy_resp.content,
                 status_code=proxy_resp.status_code,
-                headers=proxy_resp.headers
+                headers=headers_to_return
             )
 
     print("[ORCHESTRATOR] Action: Fetching WKTs and calculating cross-border overlap using Shapely.")
@@ -480,7 +485,7 @@ async def route_to_regional_registry(endpoint_path: str, request: Request, db: S
     if query_params:
         target_url = f"{target_url}?{query_params.decode('utf-8')}"
         
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host",)}
             
@@ -490,12 +495,16 @@ async def route_to_regional_registry(endpoint_path: str, request: Request, db: S
                 headers=headers,
                 content=body_bytes
             )
-            proxy_resp = await client.send(proxy_req, stream=True)
+            proxy_resp = await client.send(proxy_req)
             
-            return StreamingResponse(
-                proxy_resp.aiter_raw(),
+            headers_to_return = dict(proxy_resp.headers)
+            headers_to_return.pop("content-encoding", None)
+            headers_to_return.pop("content-length", None)
+            
+            return Response(
+                content=proxy_resp.content,
                 status_code=proxy_resp.status_code,
-                headers=proxy_resp.headers
+                headers=headers_to_return
             )
         except httpx.RequestError as exc:
             raise HTTPException(
