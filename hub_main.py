@@ -204,10 +204,13 @@ def register_user(payload: UserCreate, db: Session = Depends(get_user_db)):
     
     return UserRegistrationResponse(**response_data)
 
-def generate_jwt(email: str, private_key: str) -> dict:
+def generate_jwt(email: str, private_key: str, role: str = "farmer") -> dict:
     from datetime import timezone
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    token = jwt.encode({"sub": email, "type": "access", "exp": expire}, private_key, algorithm=ALGORITHM, headers={"kid": "hub-key-1"})
+    claims = {"sub": email, "type": "access", "exp": expire}
+    if role == "authority":
+        claims["capabilities"] = ["trace-forward"]
+    token = jwt.encode(claims, private_key, algorithm=ALGORITHM, headers={"kid": "hub-key-1"})
     return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/users/login", tags=["Authentication"])
@@ -220,7 +223,7 @@ def frontend_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session
         raise HTTPException(status_code=403, detail="Account is not active.")
         
     system_key = get_or_create_rsa_key(db)
-    return generate_jwt(user.email, system_key.private_key)
+    return generate_jwt(user.email, system_key.private_key, role=user.role)
 
 
 class ApiKeyRequest(BaseModel):
@@ -265,7 +268,7 @@ def programmatic_token(payload: ClientCredentialPayload, db: Session = Depends(g
         raise HTTPException(status_code=403, detail="Account is deactivated")
         
     system_key = get_or_create_rsa_key(db)
-    return generate_jwt(user.email, system_key.private_key)
+    return generate_jwt(user.email, system_key.private_key, role=user.role)
 
 
 
@@ -462,7 +465,7 @@ async def route_to_regional_registry(endpoint_path: str, request: Request, db: S
         if not geo_id and request.method in ["POST", "PUT"] and body_bytes:
             try:
                 payload = json.loads(body_bytes.decode('utf-8'))
-                geo_id = payload.get("geo_id") or payload.get("geo_id_field_1")
+                geo_id = payload.get("geo_id") or payload.get("geo_id_field_1") or payload.get("seed_geoid")
             except:
                 pass
         if geo_id:
