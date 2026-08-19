@@ -174,8 +174,13 @@ def register_signing_key(payload: SigningKeyCreate, current_user: str = Depends(
 def register_user(payload: UserCreate, db: Session = Depends(get_user_db)):
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    if db.query(User).filter(User.phone == payload.phone).first():
-        raise HTTPException(status_code=400, detail="Phone number already registered")
+    # No phone uniqueness check. A shared household or cooperative number is
+    # ordinary in this user base, and rejecting the second registration on one
+    # number turned away 77 real growers out of 345 in the population being
+    # migrated. email carries uniqueness; see the note on User.phone.
+    #
+    # Left unguarded rather than guarded-when-present: "unique if you supply one"
+    # would still reject the shared-number case, which is the case that matters.
 
     new_client_id = f"client_{secrets.token_hex(12)}"
     new_client_secret = secrets.token_urlsafe(32)

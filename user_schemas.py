@@ -11,15 +11,19 @@ class UserBase(BaseModel):
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
     email: EmailStr
-    phone: str = Field(
-        ..., 
-        description="Must be in E.164 international format (e.g., +1234567890)"
+    phone: Optional[str] = Field(
+        None,
+        description="Optional. If given, must be in E.164 international format (e.g., +1234567890)"
     )
     role: Optional[str] = None
     country: Optional[str] = None
 
     @field_validator('phone')
     def validate_international_phone(cls, v):
+        # Optional, but still validated when present: accepting a malformed
+        # number is not the same concession as accepting no number.
+        if v is None or v.strip() == "":
+            return None
         v = v.strip()
         if not v.startswith('+'):
             raise ValueError("Phone number must include international country code starting with '+'")
