@@ -1,3 +1,5 @@
+import smtplib
+from email.message import EmailMessage
 # Licensed under the EUPL, Version 1.2 or – as soon they will be approved by
 # the European Commission - subsequent versions of the EUPL (the "Licence");
 # You may not use this work except in compliance with the Licence.
@@ -22,9 +24,8 @@ from shapely.geometry import Point, shape
 from shapely.wkt import loads as load_wkt
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, Request, HTTPException, status, Depends, BackgroundTasks
-from fastapi import FastAPI, Request, HTTPException, status, Depends, BackgroundTasks, Response
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request, HTTPException, status, Depends
+from fastapi import Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
@@ -125,7 +126,7 @@ def get_jwks(db: Session = Depends(get_user_db)):
                 "n": int_to_base64(numbers.n),
                 "e": int_to_base64(numbers.e)
             })
-    except Exception as e:
+    except Exception:
         pass
     return jwks
 
@@ -406,6 +407,188 @@ async def calculate_cross_region_overlap(payload: OverlapRequest, request: Reque
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Geometry Processing Error: {str(e)}")
 
+
+
+# --- Email Utilities ---
+
+def send_email(to_email: str, subject: str, html_body: str):
+    sender = os.getenv("SENDER")
+    username = os.getenv("SMTP_USERNAME")
+    password = os.getenv("SMTP_PASSWORD")
+    smtp_server = os.getenv("SMTP_SERVER")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = to_email
+    msg.add_alternative(html_body, subtype='html')
+    
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            if username and password:
+                server.login(username, password)
+            server.send_message(msg)
+            print(f"Email sent successfully to {to_email}")
+    except Exception as e:
+        print(f"Failed to send email to {to_email}: {e}")
+
+# --- Legacy Backend APIs ---
+@app.get("/health", tags=["Legacy Aliases"])
+def health_check():
+    return {"status": "OK", "message": "App is running"}
+
+@app.get("/refresh", tags=["Legacy Aliases"])
+def refresh(current_user: str = Depends(get_current_user), db: Session = Depends(get_user_db)):
+    user = db.query(User).filter(User.email == current_user).first()
+    system_key = get_or_create_rsa_key(db)
+    tokens = generate_jwt(user.email, system_key.private_key, role=user.role)
+    return {"access_token": tokens["access_token"]}
+
+@app.api_route("/update", methods=["GET", "POST"], tags=["Legacy Aliases"])
+async def update_profile(request: Request, current_user: str = Depends(get_current_user), db: Session = Depends(get_user_db)):
+    if request.method == "GET":
+        user = db.query(User).filter(User.email == current_user).first()
+        return {"email": user.email, "phone": user.phone, "first_name": user.first_name, "last_name": user.last_name}
+    try:
+        data = await request.json()
+        user = db.query(User).filter(User.email == current_user).first()
+        if "first_name" in data:
+            user.first_name = data["first_name"]
+        if "last_name" in data:
+            user.last_name = data["last_name"]
+        if "phone" in data:
+            user.phone = data["phone"]
+        if "password" in data and data["password"]: 
+            user.password_hash = bcrypt.hashpw(data["password"].encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        db.commit()
+        return {"message": "User updated successfully"}
+    except Exception as e:
+        return {"message": f"Error updating: {e}"}
+
+@app.api_route("/logout", methods=["GET", "POST"], tags=["Legacy Aliases"])
+async def logout(request: Request):
+    from fastapi.responses import JSONResponse
+    import httpx
+    
+    response = JSONResponse(content={"message": "Successfully logged out"})
+    # Mimic old cookie clearing behavior just in case frontend relies on it
+    response.delete_cookie("access_token_cookie")
+    response.delete_cookie("refresh_token_cookie")
+    
+    # Forward logout to regional registries like the old code did for Asset Registry
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    async with httpx.AsyncClient() as client:
+        for region, url in REGISTRY_SERVERS.items():
+            try:
+                await client.request(request.method, f"{url}/logout", headers=headers, timeout=2.0)
+                print(f"Forwarded logout to {region} registry ({url})")
+            except Exception as e:
+                print(f"Failed to logout from {region} registry: {e}")
+                
+    return response
+
+
+
+@app.api_route("/forgot-password", methods=["GET", "POST"], tags=["Legacy Aliases"])
+async def forgot_password(request: Request, db: Session = Depends(get_user_db)):
+    if request.method == "POST":
+        try:
+            data = await request.json()
+            email = data.get("email")
+            if not email:
+                return {"message": "Email is required"}
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                from datetime import datetime, timedelta, timezone
+                import jwt
+                
+                expire = datetime.now(timezone.utc) + timedelta(hours=1)
+                system_key = get_or_create_rsa_key(db)
+                token = jwt.encode(
+                    {"sub": email, "type": "reset", "exp": expire}, 
+                    system_key.private_key, 
+                    algorithm=ALGORITHM,
+                    headers={"kid": "hub-key-1"}
+                )
+                base_url = SERVER_BASE_URL or str(request.base_url).rstrip('/')
+                reset_url = f"{base_url}/reset-password/{token}"
+                html = f"<html><body><p>Click the link below to reset your password:</p><p><a href='{reset_url}'>{reset_url}</a></p></body></html>"
+                send_email(email, "Reset your password", html)
+                
+                return {"message": "A link to reset your password has been sent to your email!"}
+            else:
+                return {"message": "Account does not exist!"}
+        except Exception:
+            return {"message": "Account does not exist!"}
+    return {"message": "Please POST with your email."}
+
+@app.api_route("/reset-password/{token}", methods=["GET", "POST"], tags=["Legacy Aliases"])
+async def reset_password(token: str, request: Request, db: Session = Depends(get_user_db)):
+    if request.method == "POST":
+        try:
+            import jwt
+            system_key = get_or_create_rsa_key(db)
+            payload = jwt.decode(token, system_key.public_key, algorithms=[ALGORITHM])
+            if payload.get("type") != "reset":
+                return {"message": "The confirmation link is invalid or has expired."}
+            email = payload.get("sub")
+            
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                data = await request.json()
+                new_password = data.get("password")
+                if not new_password:
+                    return {"message": "Password is required"}
+                
+                if bcrypt.checkpw(new_password.encode('utf-8'), user.password_hash.encode('utf-8')):
+                    return {"message": "We're sorry, but the new password you entered is the same as your previous password."}
+                
+                user.password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                db.commit()
+                return {"message": "Password updated succesfully!"}
+        except Exception:
+            return {"message": "The confirmation link is invalid or has expired."}
+            
+    return {"message": f"Reset password for token {token}"}
+
+@app.get("/verify-api-secret-keys", tags=["Legacy Aliases"])
+def verify_api_secret_keys(request: Request, db: Session = Depends(get_user_db)):
+    api_key = request.headers.get('API-KEY')
+    client_secret = request.headers.get('CLIENT-SECRET')
+    if not api_key or not client_secret:
+        return Response(content='{"message": "API Key and Client Secret are required."}', media_type="application/json", status_code=400)
+    user = db.query(User).filter(User.client_id == api_key).first()
+    if user and user.client_secret_hash and bcrypt.checkpw(client_secret.encode('utf-8'), user.client_secret_hash.encode('utf-8')):
+        return {"message": "Valid API Key and Client Secret"}
+    return Response(content='{"message": "Invalid API Key or Client Secret."}', media_type="application/json", status_code=401)
+@app.api_route("/signup", methods=["GET", "POST"], tags=["Legacy Aliases"])
+def legacy_signup(request: Request, payload: UserCreate = None, db: Session = Depends(get_user_db)):
+    if request.method == "POST" and payload:
+        return register_user(payload, db)
+    return {"message": "Use POST with user data to register"}
+
+@app.api_route("/login", methods=["GET", "POST"], tags=["Legacy Aliases"])
+def legacy_login_alias(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_user_db)):
+    if request.method == "POST":
+        return frontend_login(form_data, db)
+    return {"message": "Use POST with credentials to login"}
+
+@app.api_route("/generate-api-keys", methods=["GET", "POST"], tags=["Legacy Aliases"])
+def legacy_generate_api_keys(request: Request, db: Session = Depends(get_user_db)):
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return Response(content='{"message": "Missing token"}', media_type="application/json", status_code=401)
+    try:
+        email = get_current_user(auth_header.split(" ")[1], db)
+        payload = ApiKeyRequest(email=email)
+        return request_api_keys(payload, db)
+    except Exception as e:
+        return Response(content=f'{{"message": "{str(e)}"}}', media_type="application/json", status_code=401)
+
+# ---------------------------
 
 @app.api_route("/{endpoint_path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Gateway Routing"])
 async def route_to_regional_registry(endpoint_path: str, request: Request, db: Session = Depends(get_user_db)):
