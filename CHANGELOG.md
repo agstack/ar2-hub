@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Capabilities come from the operator, not the user**: the `trace-forward` capability was written into a token whenever the user's self-declared `role` was `"authority"`. It is now granted only to accounts listed in `HUB_AUTHORITY_ACCOUNTS`; `role` is descriptive and is no longer an authorisation input. (`capabilities.py`, `hub_main.generate_jwt`)
+
+### Added
+- First test suite (`tests/`) and a CI workflow running it. The role test fails against the previous code.
+
 ## [v0.9-review]
 
 ### Added

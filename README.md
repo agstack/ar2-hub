@@ -42,6 +42,7 @@ Follow these steps to run the Hub Gateway locally alongside an `ar2` Node and th
 | `SERVER_BASE_URL` | Base URL of the Gateway instance. | `http://127.0.0.1:8000` | No |
 | `REGISTRY_SERVERS` | JSON string defining backend Nodes and their capabilities (country routing). | `[{"url": "http://127.0.0.1:8001", "countries": ["USA", "India"]}]` | No |
 | `WORLD_SHP_FILE` | Path to the `.shp` file used for point-in-polygon country resolution before routing. | *None* | No |
+| `HUB_AUTHORITY_ACCOUNTS` | Comma-separated account emails the operator has accredited as authorities. Only these accounts receive the `trace-forward` capability in their token. A user's self-declared `role` is descriptive and grants nothing. | *None* (no account carries the capability) | No |
 
 ## Endpoints Overview
 
