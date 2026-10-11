@@ -32,6 +32,7 @@ from pydantic import BaseModel, EmailStr
 from user_database import get_user_db, engine, Base
 from user_models import User, SigningKey, SystemKey
 from user_schemas import UserCreate, UserResponse, UserRegistrationResponse, SigningKeyCreate, SigningKeyResponse
+from capabilities import capabilities_for
 
 load_dotenv()
 
@@ -215,8 +216,12 @@ def generate_jwt(email: str, private_key: str, role: str = "farmer") -> dict:
     from datetime import timezone
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     claims = {"sub": email, "type": "access", "exp": expire}
-    if role == "authority":
-        claims["capabilities"] = ["trace-forward"]
+    # ``role`` is kept in the signature for the two callers below and is not
+    # consulted: capabilities come from the operator allowlist only. See
+    # capabilities.py for why.
+    caps = capabilities_for(email)
+    if caps:
+        claims["capabilities"] = caps
     token = jwt.encode(claims, private_key, algorithm=ALGORITHM, headers={"kid": "hub-key-1"})
     return {"access_token": token, "token_type": "bearer"}
 
